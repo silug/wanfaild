@@ -1,0 +1,23 @@
+This is a work in progress.  Unfortunately, it's only half-baked at the
+moment.  Eventually it'll work, I promise.
+
+NAME
+    wanfaild - Monitor WAN links and provide failover
+
+DESCRIPTION
+    wanfaild will monitor one or more WAN links and provide failover
+    support.
+
+SYNOPSIS
+    wanfaild [options]
+
+     Options:
+       --conf       -c      Specify configuration file
+       --help       -h      Help message
+
+     Long options:
+       --version            Print the version number
+
+AUTHOR
+    Steven Pritchard <steve@kspei.com>
+
