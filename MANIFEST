@@ -1,0 +1,13 @@
+COPYING
+Build.PL
+MANIFEST
+wanfaild
+wanfaild-notify-admin
+META.yml
+README
+TODO
+samples/wanfaild.yml
+t/00_dbus.t
+t/10_yaml.t
+t/01_ethtool.t
+t/99_pod.t

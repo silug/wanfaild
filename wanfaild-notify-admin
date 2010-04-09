@@ -1,0 +1,49 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Net::SMTP;
+use Sys::Syslog qw(:standard :macros);
+
+our $NAME='wanfaild';
+
+my %conf=();
+
+for my $item (qw/from admin mailhost interface state reason/) {
+    my $env='WANFAILD_' . uc($item);
+    $conf{$item}=$ENV{$env} or die "$env not set.  Exiting.\n";
+}
+
+# Log a message to syslog, if possible.
+if (openlog($NAME, "ndelay,nofatal,pid", LOG_DAEMON)) {
+    syslog(LOG_NOTICE, "Interface %s now %s - %s",
+        $conf{'interface'}, $conf{'state'}, $conf{'reason'});
+    closelog();
+}
+
+# Send email.
+my $smtp=Net::SMTP->new($conf{'mailhost'})
+    or die "Failed to send mail: $?\n";
+
+$smtp->mail($conf{'from'});
+
+for my $to (split /\s*,\s*/, $conf{'admin'}) {
+    $smtp->to($to);
+}
+
+$smtp->data();
+
+$smtp->datasend("From: $conf{'from'}\n");
+$smtp->datasend("To: $conf{'admin'}\n");
+$smtp->datasend("Subject: Interface $conf{'interface'} $conf{'state'}\n");
+
+$smtp->datasend("\n");
+
+$smtp->datasend($conf{'reason'});
+
+$smtp->dataend();
+
+$smtp->quit();
+
+# vi: set ai et:

@@ -1,0 +1,338 @@
+#!/usr/bin/perl
+#
+# wanfaild - Monitor WAN links and provide failover
+#
+# Copyright (C) 2010 Steven Pritchard <steve@kspei.com>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+
+our $NAME="wanfaild";
+our $VERSION='0.01';
+
+=head1 NAME
+
+wanfaild - Monitor WAN links and provide failover
+
+=head1 DESCRIPTION
+
+B<wanfaild> will monitor one or more WAN links and provide failover
+support.
+
+=cut
+
+use strict;
+use warnings;
+
+use YAML::Tiny;
+use Getopt::Long;
+use Pod::Usage;
+use Sys::Syslog qw(:standard :macros);
+use Net::Ping;
+use Socket;
+use List::Util qw(shuffle);
+use FileHandle;
+
+sub print_version();
+sub load_config($);
+sub ping(@);
+sub connect_test(@);
+sub linkstatus($);
+sub logger(@);
+sub writepid($);
+sub cleanup();
+sub trap_signals();
+
+=head1 SYNOPSIS
+
+wanfaild [options]
+
+ Options:
+   --conf       -c      Specify configuration file
+   --help       -h      Help message
+
+ Long options:
+   --version            Print the version number
+
+=cut
+
+my $configfile="/etc/wanfaild.yml";
+my $help=0;
+
+GetOptions(
+    'conf|c=s'  => \$configfile,
+    'help|h'    => \$help,
+    'version'   => \&print_version,
+) or pod2usage({ -exitval => 1, -verbose => 0 });
+
+pod2usage({ -exitval => 0, -verbose => 1 }) if ($help);
+
+# Load the config file.
+our %conf=load_config($configfile);
+
+# Set defaults.
+$conf{'interval'}=30 unless $conf{'interval'};
+$conf{'syslog'}=1 unless exists($conf{'syslog'});
+$conf{'pidfile'}="/var/run/$NAME.pid" unless $conf{'pidfile'};
+
+die "At least one interface must be defined.\n"
+    unless (exists($conf{'interface'}) and keys(%{$conf{'interface'}}));
+
+# Prepare to log to syslog.
+if ($conf{'syslog'}) {
+    if (!openlog($NAME, "nofatal,pid", LOG_DAEMON)) {
+        warn "openlog() failed, syslog logging disabled: $!\n";
+        $conf{'syslog'}=0;
+    }
+}
+
+# FIXME - Do we want to fork into the background?  Maybe add an argument?
+our $pidfile=$conf{'pidfile'};
+$pidfile=undef unless (writepid($pidfile));
+
+trap_signals();
+
+# FIXME - Just for testing
+use Data::Dumper;
+print STDERR Dumper(\%conf), "\n";
+
+# FIXME - Again, testing.
+for my $interface (keys(%{$conf{'interface'}})) {
+    linkstatus($interface)
+        if (exists($conf{'interface'}->{$interface}->{'monitor'})
+            and defined($conf{'interface'}->{$interface}->{'monitor'})
+            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'linkstatus'})
+            and $conf{'interface'}->{$interface}->{'monitor'}->{'linkstatus'});
+
+    # FIXME - If gateway is just true (not an IP), sub the actual gateway.
+    ping($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
+        if (exists($conf{'interface'}->{$interface}->{'monitor'})
+            and defined($conf{'interface'}->{$interface}->{'monitor'})
+            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
+            and defined($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'}));
+
+    ping(shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}}))
+        if (exists($conf{'interface'}->{$interface}->{'monitor'})
+            and defined($conf{'interface'}->{$interface}->{'monitor'})
+            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'ping'})
+            and @{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}});
+
+    connect_test(shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}}))
+        if (exists($conf{'interface'}->{$interface}->{'monitor'})
+            and defined($conf{'interface'}->{$interface}->{'monitor'})
+            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'connect'})
+            and @{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}});
+}
+
+cleanup();
+
+exit 0;
+
+# END, subs follow...
+
+# Trap some signals.
+sub trap_signals() {
+    # Try to restart on SIGHUP, or die if we fail.
+    $SIG{'HUP'}=sub {
+            if (!exec($0, @ARGV)) {
+                logger "Restart failed: $!";
+                cleanup();
+                exit 1;
+            }
+        };
+
+    # SIGINT, SIGQUIT, and SIGTERM all cause a clean exit.
+    $SIG{'INT'}=sub { cleanup(); exit 0; };
+    $SIG{'QUIT'}=sub { cleanup(); exit 0; };
+    $SIG{'TERM'}=sub { cleanup(); exit 0; };
+
+    # Ignore SIGALRM.
+    $SIG{'ALRM'}='IGNORE';
+}
+
+sub cleanup() {
+    if (defined($pidfile)) {
+        unlink($pidfile) or logger "Failed to unlink $pidfile: $!";
+    }
+
+    closelog() if ($conf{'syslog'});
+}
+
+sub writepid($) {
+    my $file=$_[0];
+
+    # FIXME - We should clean up stale pid files.
+    my $fh=new FileHandle $file, O_WRONLY|O_CREAT|O_EXCL;
+
+    if (!$fh) {
+        logger "Failed to open $file for writing: $!";
+        return 0;
+    }
+
+    unless (print $fh "$$\n" and $fh->close()) {
+        logger "Failed to write to $file: $!";
+        return 0;
+    }
+
+    return 1;
+}
+
+sub logger(@) {
+    if ($conf{'syslog'}) {
+        syslog(LOG_NOTICE, @_);
+    }
+
+    if (-t STDERR or !$conf{'syslog'}) {
+        if (@_ > 1) {
+            warn sprintf($_[0], @_[1..$#_]) . "\n";
+        } else {
+            warn @_, "\n";
+        }
+    }
+}
+
+sub linkstatus($) {
+    my $interface=$_[0];
+
+    # FIXME - OK, this is a cop-out way of doing this,
+    # but it is all I have at the moment.
+    my $ethtool_cmd='/sbin/ethtool ' . $interface . ' 2>&1';
+    my @ethtool=`$ethtool_cmd`;
+
+    if (my $status=(grep /^\s*Link\sdetected:\s+(yes|no)$/, @ethtool)[0]) {
+        if ($status =~ /^\s*Link\sdetected:\s+yes$/) {
+            logger "$interface link UP";
+            return 1;
+        } else {
+            logger "$interface link DOWN";
+            return 0;
+        }
+    } else {
+        logger "Failed to determine link status for $interface.";
+        logger @ethtool if (@ethtool);
+
+        return -1;
+    }
+}
+
+sub connect_test(@) {
+    for my $host_and_port (@_) {
+        my ($host,$port);
+
+        if ($host_and_port =~ /^([^:]+):([^:]+)$/) {
+            $host=$1;
+            $port=$2;
+
+            if ($port =~ /\D/) {
+                $port=getservbyname($port, 'tcp');
+                logger "Invalid host/port '$host_and_port', skipping.";
+                next;
+            }
+        } else {
+            logger "Failed to parse host and port '$host_and_port', skipping.";
+            next;
+        }
+
+        my $iaddr=inet_aton($host);
+        if (!$iaddr) {
+            logger "inet_aton($host) failed: $!";
+            next;
+        }
+
+        my $paddr=sockaddr_in($port, $iaddr);
+        if (!$paddr) {
+            logger "sockaddr_in($port, $host) failed: $!";
+            next;
+        }
+
+        my $proto=getprotobyname('tcp');
+        if (!$proto) {
+            logger "getprotobyname('tcp') failed: $!";
+            next;
+        }
+
+        # FIXME - This should be converted to IO::Socket.
+        # FIXME - We also should be setting a source address here, right?
+        if (!socket(SOCK, PF_INET, SOCK_STREAM, $proto)) {
+            logger "socket() failed: $!";
+            next;
+        }
+
+        if (connect(SOCK, $paddr)) {
+            close(SOCK);
+            logger "connect $host_and_port: SUCCESS";
+            return 1;
+        } else {
+            logger "connect $host_and_port: FAIL ($!)";
+            next;
+        }
+    }
+
+    return 0;
+}
+
+sub ping(@) {
+    my $ping;
+    
+    eval { $ping=Net::Ping->new("icmp"); };
+
+    if ($@) {
+        logger $@;
+        return 0;
+    }
+
+    if (!$ping) {
+        logger "Net::Ping->new() failed: $!";
+        return 0;
+    }
+
+    # FIXME - We should be setting the source address here.
+    #$ping->bind($source) or warn "bind to $source failed: $!\n";
+
+    for my $host (@_) {
+        if ($ping->ping($host, 2)) {
+            logger "ping $host: SUCCESS";
+            return 1;
+        } else {
+            logger "ping $host: FAIL";
+        }
+    }
+
+    return 0;
+}
+
+sub load_config($) {
+    my ($configfile)=@_;
+
+    my $yml=YAML::Tiny->new();
+
+    my $conf=$yml->read($configfile);
+
+    die "Failed to read configuration file: $!\n" if (!defined($conf));
+    die "Invalid configuration file!\n" if (!$conf->[0]);
+
+    return %{$conf->[0]};
+}
+
+sub print_version() {
+    print "$NAME version $VERSION\n";
+    exit 0;
+}
+
+=head1 AUTHOR
+
+Steven Pritchard <steve@kspei.com>
+
+=cut
+# vi: set ai et:

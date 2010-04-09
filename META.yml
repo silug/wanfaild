@@ -1,0 +1,23 @@
+---
+name: wanfaild
+version: 0.01
+author:
+  - 'Steven Pritchard <steve@computerroom.us>'
+abstract: Monitor WAN links and provide failover
+license: gpl
+resources:
+  license: ~
+requires:
+  English: 0
+  File::Basename: 0
+  Getopt::Long: 0
+  Pod::Usage: 0
+  Test::More: 0
+  Test::Pod: 1.00
+  YAML::Tiny: 0
+  strict: 0
+  warnings: 0
+generated_by: Module::Build version 0.32
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.2.html
+  version: 1.2

@@ -1,0 +1,67 @@
+# Sample configuration file.  File will be parsed by YAML::Tiny.
+# See http://yaml.org/spec/1.1/current.html for specifications.
+
+# Address to use when sending mail.
+mailfrom: root@localhost
+
+# Who to notify on state changes.  Can be a comma-separated list.
+admin: root@localhost
+
+# Server to use as an SMTP relay when sending mail.
+mailhost: localhost
+
+# Polling interval (in seconds).
+interval: 30
+
+# Interfaces to monitor.
+interface: 
+
+  eth0: 
+
+    monitor: 
+      linkstatus: 1
+      gateway: 1
+      connect: 
+        - myipaddress.com:80
+        - checkip.dyndns.com:80
+        - externalipaddress.com:80
+      ping: 
+        - www.google.com
+
+    onfail: 
+      # This will be passed the following environment variables:
+      # WANFAILD_FROM - Address to send mail from.  Defaults to root@localhost.
+      # WANFAILD_ADMIN - Admin address.  Defaults to root@localhost.
+      # WANFAILD_MAILHOST - SMTP server to use for sending email.
+      # WANFAILD_INTERFACE - Interface with a state change.
+      # WANFAILD_STATE - Either UP or DOWN.
+      # WANFAILD_REASON - Text describing the failure/success state.
+      - wanfaild-notify-admin
+      - ifconfig eth0 down
+
+    onresume: 
+      - wanfaild-notify-admin
+      - ifconfig eth0 up
+
+  eth1: 
+    monitor: 
+      # For interfaces that don't support ethtool, i.e. wireless.
+      linkstatus: 0
+      # If we can't determine the gateway, or we're wrong.
+      gateway: 10.0.0.1
+      connect:
+        - whatismyipaddress.com:80
+        - www.whatismyip.com:80
+        - www.ipchicken.com:80
+      ping:
+        - www.bing.com
+
+    onfail:
+      - wanfaild-notify-admin
+      - ifconfig eth1 down
+
+    onresume:
+      - wanfaild-notify-admin
+      - ifconfig eth1 up
+
+    # How do we add/remove a static route?

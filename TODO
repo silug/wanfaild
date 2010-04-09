@@ -1,0 +1,4 @@
+* We need a DNS cache so we don't accidentally confuse a DNS failure
+  with an interface failure.
+* We need to set up static routes to things we test so we're sure we're
+  testing the right interface.
