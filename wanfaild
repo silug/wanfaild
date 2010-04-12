@@ -257,29 +257,42 @@ sub check_status() {
         # Also assumes the connection is up if we have no tests defined.
         my $current='UP';
 
-        my $reason;
+        my $reason="OK:";
 
         # Check link status.
-        if (linkstatus($interface) == 0) {
+        my $link=linkstatus($interface);
+        if ($link == 0) {
             $current='DOWN';
             $reason='No link.';
+        } elsif ($link == 1) {
+            $reason.=" link";
         }
 
         # FIXME - If gateway is just true (not an IP), sub the actual gateway.
-        if ($current eq 'UP' and gwping($interface) == 0) {
-            $current='DOWN';
-            $reason='Failed to ping gateway.';
+        if ($current eq "UP") {
+            my $gw=gwping($interface);
+            if ($gw == 0) {
+                $current='DOWN';
+                $reason='Failed to ping gateway.';
+            } elsif ($gw == 1) {
+                $reason.=" gateway";
+            }
         }
 
         if ($current eq 'UP') {
             my $pingtest=ping_test($interface);
-            my $connecttest=connect_test($interface);
+            my $connecttest=-1;
+            $connecttest=connect_test($interface) unless ($pingtest == 1);
 
             if (($pingtest == 0 and $connecttest == 0)
                 or ($pingtest == -1 and $connecttest == 0)
                 or ($pingtest == 0 and $connecttest == -1)) {
                 $current='DOWN';
                 $reason="Ping/connect tests failed.";
+            } elsif ($pingtest == 1) {
+                $reason.=" ping";
+            } elsif ($connecttest == 1) {
+                $reason.=" connect";
             }
         }
 
