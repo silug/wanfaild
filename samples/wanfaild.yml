@@ -10,7 +10,7 @@ admin: root@localhost
 # Server to use as an SMTP relay when sending mail.
 mailhost: localhost
 
-# Polling interval (in seconds).
+# Polling interval (in seconds, default is 30).
 interval: 30
 
 # Interfaces to monitor.
@@ -27,6 +27,9 @@ interface:
         - externalipaddress.com:80
       ping: 
         - www.google.com
+
+      # For whatever reason, we want to check this interface more often...
+      interval: 10
 
     onfail: 
       # This will be passed the following environment variables:

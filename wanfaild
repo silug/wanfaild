@@ -43,16 +43,26 @@ use Net::Ping;
 use Socket;
 use List::Util qw(shuffle);
 use FileHandle;
+use POSIX qw(:sys_wait_h);
+use Math::BigInt try => 'GMP';
 
 sub print_version();
 sub load_config($);
 sub ping(@);
-sub connect_test(@);
+sub _connect(@);
 sub linkstatus($);
 sub logger(@);
 sub writepid($);
 sub cleanup();
 sub trap_signals();
+sub hup();
+sub notify($$$);
+sub prenotify();
+sub check_status();
+sub ping_test($);
+sub connect_test($);
+sub gwping($);
+sub calc_sleeptime($);
 
 =head1 SYNOPSIS
 
@@ -66,6 +76,15 @@ wanfaild [options]
    --version            Print the version number
 
 =cut
+
+# We store up/down state information here.
+our %status=();
+
+# And last checked time here.
+our %checktime=();
+
+# Store $0 and @ARGV for later (before GetOptions() changes @ARGV).
+our @args=($0, @ARGV);
 
 my $configfile="/etc/wanfaild.yml";
 my $help=0;
@@ -85,9 +104,15 @@ our %conf=load_config($configfile);
 $conf{'interval'}=30 unless $conf{'interval'};
 $conf{'syslog'}=1 unless exists($conf{'syslog'});
 $conf{'pidfile'}="/var/run/$NAME.pid" unless $conf{'pidfile'};
+$conf{'mailfrom'}='root@localhost' unless $conf{'mailfrom'};
+$conf{'admin'}='root@localhost' unless $conf{'admin'};
+$conf{'mailhost'}='localhost' unless $conf{'mailhost'};
 
 die "At least one interface must be defined.\n"
     unless (exists($conf{'interface'}) and keys(%{$conf{'interface'}}));
+
+# Set up some environment variables for later notifications.
+prenotify();
 
 # Prepare to log to syslog.
 if ($conf{'syslog'}) {
@@ -101,38 +126,38 @@ if ($conf{'syslog'}) {
 our $pidfile=$conf{'pidfile'};
 $pidfile=undef unless (writepid($pidfile));
 
+prenotify();
 trap_signals();
 
-# FIXME - Just for testing
-use Data::Dumper;
-print STDERR Dumper(\%conf), "\n";
+## FIXME - Just for testing
+#use Data::Dumper;
+##print STDERR Dumper(\%ENV), "\n";
+#print STDERR Dumper(\%conf), "\n";
 
-# FIXME - Again, testing.
-for my $interface (keys(%{$conf{'interface'}})) {
-    linkstatus($interface)
-        if (exists($conf{'interface'}->{$interface}->{'monitor'})
-            and defined($conf{'interface'}->{$interface}->{'monitor'})
-            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'linkstatus'})
-            and $conf{'interface'}->{$interface}->{'monitor'}->{'linkstatus'});
+# Interval between polls, with a minimum of 5 seconds.
+our $sleeptime=calc_sleeptime(5);
+#logger "Sleeping $sleeptime seconds between polls.";
 
-    # FIXME - If gateway is just true (not an IP), sub the actual gateway.
-    ping($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
-        if (exists($conf{'interface'}->{$interface}->{'monitor'})
-            and defined($conf{'interface'}->{$interface}->{'monitor'})
-            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
-            and defined($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'}));
+# Signal says we're done.
+our $done=0;
 
-    ping(shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}}))
-        if (exists($conf{'interface'}->{$interface}->{'monitor'})
-            and defined($conf{'interface'}->{$interface}->{'monitor'})
-            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'ping'})
-            and @{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}});
+# Signal says it's time to check status.
+our $alarm=0;
 
-    connect_test(shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}}))
-        if (exists($conf{'interface'}->{$interface}->{'monitor'})
-            and defined($conf{'interface'}->{$interface}->{'monitor'})
-            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'connect'})
-            and @{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}});
+check_status();
+alarm($sleeptime);
+
+while ($done == 0) {
+    # Wait for signals.
+    POSIX::pause();
+
+    #logger "Woke up!";
+
+    if ($alarm) {
+        check_status();
+        $alarm=0;
+        alarm($sleeptime);
+    }
 }
 
 cleanup();
@@ -141,24 +166,222 @@ exit 0;
 
 # END, subs follow...
 
+sub calc_sleeptime($) {
+    my $min=$_[0];
+
+    return ($min > $sleeptime ? $min : $sleeptime) if (defined($sleeptime));
+
+    my @val=($conf{'interval'});
+
+    for my $interface (keys(%{$conf{'interface'}})) {
+        push(@val, $conf{'interface'}->{$interface}->{'monitor'}->{'interval'})
+            if (exists($conf{'interface'}->{$interface}->{'monitor'})
+            and exists($conf{'interface'}->{$interface}->{'monitor'}->{'interval'}));
+    }
+
+    my $gcd;
+    if (@val == 1) {
+        $gcd=$val[0];
+    } else {
+        $gcd=Math::BigInt::bgcd(@val);
+    }
+
+    return ($min > $gcd ? $min : $gcd);
+}
+
+sub gwping($) {
+    my $interface=$_[0];
+
+    return -1 unless
+        (exists($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
+        and defined($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
+        and $conf{'interface'}->{$interface}->{'monitor'}->{'gateway'});
+
+    my $gw=$conf{'interface'}->{$interface}->{'monitor'}->{'gateway'};
+
+    if ($gw =~ /^(?:1|yes|true)$/i) {
+        # FIXME
+        logger "Auto-configuration of gateway unimplemented.";
+        return -1;
+    }
+
+    # Try 5 times before giving up.
+    for (my $n=0;$n<5;$n++) {
+        my $ret=ping($gw);
+
+        return $ret unless ($ret == 0);
+    }
+
+    return 0;
+}
+
+sub ping_test($) {
+    my $interface=$_[0];
+
+    return -1 unless
+        (exists($conf{'interface'}->{$interface}->{'monitor'}->{'ping'})
+        and @{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}});
+
+    return ping(shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}}));
+}
+
+sub connect_test($) {
+    my $interface=$_[0];
+
+    return -1 unless
+        (exists($conf{'interface'}->{$interface}->{'monitor'}->{'connect'})
+        and @{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}});
+
+    return _connect(shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}}));
+}
+
+sub check_status() {
+    for my $interface (keys(%{$conf{'interface'}})) {
+        next unless (exists($conf{'interface'}->{$interface}->{'monitor'})
+            and defined($conf{'interface'}->{$interface}->{'monitor'}));
+
+        my $interval=$conf{'interval'};
+
+        $interval=$conf{'interface'}->{$interface}->{'monitor'}->{'interval'}
+            if (exists($conf{'interface'}->{$interface}->{'monitor'}->{'interval'}));
+
+        next if (exists($checktime{$interface})
+            and (time - $checktime{$interface} < $interval));
+
+        logger "Checking status of $interface.";
+
+        # Assume the connection was up if this is the first time we're checking.
+        $status{$interface}='UP' if (!exists($status{$interface}));
+
+        # Assume the connection is up unless our tests fail.
+        # Also assumes the connection is up if we have no tests defined.
+        my $current='UP';
+
+        my $reason;
+
+        # Check link status.
+        if (linkstatus($interface) == 0) {
+            $current='DOWN';
+            $reason='No link.';
+        }
+
+        # FIXME - If gateway is just true (not an IP), sub the actual gateway.
+        if ($current eq 'UP' and gwping($interface) == 0) {
+            $current='DOWN';
+            $reason='Failed to ping gateway.';
+        }
+
+        if ($current eq 'UP') {
+            my $pingtest=ping_test($interface);
+            my $connecttest=connect_test($interface);
+
+            if (($pingtest == 0 and $connecttest == 0)
+                or ($pingtest == -1 and $connecttest == 0)
+                or ($pingtest == 0 and $connecttest == -1)) {
+                $current='DOWN';
+                $reason="Ping/connect tests failed.";
+            }
+        }
+
+        if ($current ne $status{$interface}) {
+            notify($interface, $current, $reason);
+            $status{$interface}=$current;
+        }
+
+        $checktime{$interface}=time;
+    }
+}
+
+sub prenotify() {
+    # These environment variables will always be set for children.
+    $ENV{'WANFAILD_FROM'}=$conf{'mailfrom'};
+    $ENV{'WANFAILD_ADMIN'}=$conf{'admin'};
+    $ENV{'WANFAILD_MAILHOST'}=$conf{'mailhost'};
+
+    1;
+}
+
+sub notify($$$) {
+    my ($interface, $state, $reason)=@_;
+
+    my $handler;
+
+    if ($state eq "UP") {
+        $handler='onresume';
+    } elsif ($state eq "DOWN") {
+        $handler='onfail';
+    } else {
+        logger "notify() called with unknown state '$state'!";
+        return 0;
+    }
+
+    logger "Interface $interface now $state - $reason";
+
+    if ($conf{'interface'}->{$interface}->{$handler}) {
+        # Set environment variables related to this event.
+        $ENV{'WANFAILD_INTERFACE'}=$interface;
+        $ENV{'WANFAILD_STATE'}=$state;
+        $ENV{'WANFAILD_REASON'}=$reason;
+
+        # Do something useful.
+        for my $action (@{$conf{'interface'}->{$interface}->{$handler}}) {
+            my $f=fork();
+
+            if ($f == 0) {
+                # In the child.
+                if (!exec($action)) {
+                    logger "Failed to run '$action': $!";
+                    exit 1;
+                }
+            } elsif (!defined($f)) {
+                logger "fork() failed trying to run '$action': $!";
+            }
+        }
+
+        # Clean up.
+        delete $ENV{'WANFAILD_INTERFACE'};
+        delete $ENV{'WANFAILD_STATE'};
+        delete $ENV{'WANFAILD_REASON'};
+    }
+}
+
+sub hup() {
+    #logger "Trying to execute '@args'...";
+    if (!exec(@args)) {
+        logger "Restart failed: $!";
+        cleanup();
+        exit 1;
+    }
+}
+
 # Trap some signals.
 sub trap_signals() {
     # Try to restart on SIGHUP, or die if we fail.
-    $SIG{'HUP'}=sub {
-            if (!exec($0, @ARGV)) {
-                logger "Restart failed: $!";
-                cleanup();
-                exit 1;
-            }
-        };
+    $SIG{'HUP'}=\&hup;
+    # That only seems to work once?
+    # Workaround from perlipc(1):
+    my $sigset = POSIX::SigSet->new();
+    my $action = POSIX::SigAction->new('hup',
+                                       $sigset,
+                                       &POSIX::SA_NODEFER);
+    POSIX::sigaction(&POSIX::SIGHUP, $action);
 
     # SIGINT, SIGQUIT, and SIGTERM all cause a clean exit.
-    $SIG{'INT'}=sub { cleanup(); exit 0; };
-    $SIG{'QUIT'}=sub { cleanup(); exit 0; };
-    $SIG{'TERM'}=sub { cleanup(); exit 0; };
+    $SIG{'INT'}=sub { $done++; };
+    $SIG{'QUIT'}=sub { $done++; };
+    $SIG{'TERM'}=sub { $done++; };
 
-    # Ignore SIGALRM.
-    $SIG{'ALRM'}='IGNORE';
+    # SIGALRM tells us we need to check status.
+    $SIG{'ALRM'}=sub { $alarm++; };
+
+    # We don't really care about exit values from children.
+    # This is straight from perlfunc(1).
+    $SIG{'CHLD'}=sub {
+            my $kid;
+            do {
+                $kid=waitpid(-1, WNOHANG);
+            } while ($kid > 0);
+        };
 }
 
 sub cleanup() {
@@ -205,13 +428,17 @@ sub logger(@) {
 sub linkstatus($) {
     my $interface=$_[0];
 
+    return -1 unless
+        (exists($conf{'interface'}->{$interface}->{'monitor'}->{'linkstatus'})
+            and $conf{'interface'}->{$interface}->{'monitor'}->{'linkstatus'});
+
     # FIXME - OK, this is a cop-out way of doing this,
     # but it is all I have at the moment.
     my $ethtool_cmd='/sbin/ethtool ' . $interface . ' 2>&1';
     my @ethtool=`$ethtool_cmd`;
 
-    if (my $status=(grep /^\s*Link\sdetected:\s+(yes|no)$/, @ethtool)[0]) {
-        if ($status =~ /^\s*Link\sdetected:\s+yes$/) {
+    if (my $state=(grep /^\s*Link\sdetected:\s+(yes|no)$/, @ethtool)[0]) {
+        if ($state =~ /^\s*Link\sdetected:\s+yes$/) {
             logger "$interface link UP";
             return 1;
         } else {
@@ -219,14 +446,16 @@ sub linkstatus($) {
             return 0;
         }
     } else {
-        logger "Failed to determine link status for $interface.";
+        logger "Failed to determine link state for $interface.";
         logger @ethtool if (@ethtool);
 
         return -1;
     }
 }
 
-sub connect_test(@) {
+sub _connect(@) {
+    my $retval=0;
+
     for my $host_and_port (@_) {
         my ($host,$port);
 
@@ -237,28 +466,33 @@ sub connect_test(@) {
             if ($port =~ /\D/) {
                 $port=getservbyname($port, 'tcp');
                 logger "Invalid host/port '$host_and_port', skipping.";
+                $retval=-1;
                 next;
             }
         } else {
             logger "Failed to parse host and port '$host_and_port', skipping.";
+            $retval=-1;
             next;
         }
 
         my $iaddr=inet_aton($host);
         if (!$iaddr) {
             logger "inet_aton($host) failed: $!";
+            $retval=-1;
             next;
         }
 
         my $paddr=sockaddr_in($port, $iaddr);
         if (!$paddr) {
             logger "sockaddr_in($port, $host) failed: $!";
+            $retval=-1;
             next;
         }
 
         my $proto=getprotobyname('tcp');
         if (!$proto) {
             logger "getprotobyname('tcp') failed: $!";
+            $retval=-1;
             next;
         }
 
@@ -266,6 +500,7 @@ sub connect_test(@) {
         # FIXME - We also should be setting a source address here, right?
         if (!socket(SOCK, PF_INET, SOCK_STREAM, $proto)) {
             logger "socket() failed: $!";
+            $retval=-1;
             next;
         }
 
@@ -279,7 +514,7 @@ sub connect_test(@) {
         }
     }
 
-    return 0;
+    return $retval;
 }
 
 sub ping(@) {
@@ -289,12 +524,12 @@ sub ping(@) {
 
     if ($@) {
         logger $@;
-        return 0;
+        return -1;
     }
 
     if (!$ping) {
         logger "Net::Ping->new() failed: $!";
-        return 0;
+        return -1;
     }
 
     # FIXME - We should be setting the source address here.
