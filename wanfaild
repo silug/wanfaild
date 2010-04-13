@@ -202,9 +202,7 @@ sub ip_cached($) {
 sub my_system(@) {
     my @command=@_;
 
-    system(@command);
-
-    my $ret=$?;
+    my $ret=system(@command);
 
     # More-or-less straight from perlfunc(1).
     if ($ret == -1) {
@@ -212,7 +210,7 @@ sub my_system(@) {
     } elsif ($ret & 127) {
         logger sprintf("Child '@command' died with signal %d.",  ($ret & 127));
         logger "Core dumped." if ($ret & 128);
-    } else {
+    } elsif ($ret != 0) {
         logger sprintf("Child '@command' exited with value %d", $ret >> 8);
     }
 
@@ -227,6 +225,8 @@ sub route_del($$) {
 
     return 1 if ($gw eq $ip);
 
+    #logger "Removing static route to $ip via $gw on $interface...";
+
     # FIXME - Not correct at all.
     my_system("/sbin/ip", "route", "del", $ip, "via", $gw);
 }
@@ -237,6 +237,8 @@ sub route_add($$) {
     my $gw=$conf{'interface'}->{$interface}->{'monitor'}->{'gateway'};
 
     return 1 if ($gw eq $ip);
+
+    #logger "Adding static route to $ip via $gw on $interface...";
 
     # FIXME - Not correct at all.
     my_system("/sbin/ip", "route", "add", $ip, "via", $gw);
