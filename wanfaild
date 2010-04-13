@@ -208,12 +208,12 @@ sub my_system(@) {
 
     # More-or-less straight from perlfunc(1).
     if ($ret == -1) {
-        logger "Failed to execute '@command': $!\n";
+        logger "Failed to execute '@command'";
     } elsif ($ret & 127) {
         logger sprintf("Child '@command' died with signal %d.",  ($ret & 127));
         logger "Core dumped." if ($ret & 128);
     } else {
-        logger sprintf("Child '@command' exited with value %d\n", $ret >> 8);
+        logger sprintf("Child '@command' exited with value %d", $ret >> 8);
     }
 
     return(($ret == 0) & 1);
@@ -223,15 +223,23 @@ sub my_system(@) {
 sub route_del($$) {
     my ($interface, $ip)=@_;
 
+    my $gw=$conf{'interface'}->{$interface}->{'monitor'}->{'gateway'};
+
+    return 1 if ($gw eq $ip);
+
     # FIXME - Not correct at all.
-    my_system("/sbin/ip", "route", "add", $ip, "via", $conf{'interface'}->{$interface}->{'monitor'}->{'gateway'});
+    my_system("/sbin/ip", "route", "del", $ip, "via", $gw);
 }
 
 sub route_add($$) {
     my ($interface, $ip)=@_;
 
+    my $gw=$conf{'interface'}->{$interface}->{'monitor'}->{'gateway'};
+
+    return 1 if ($gw eq $ip);
+
     # FIXME - Not correct at all.
-    my_system("/sbin/ip", "route", "del", $ip, "via", $conf{'interface'}->{$interface}->{'monitor'}->{'gateway'});
+    my_system("/sbin/ip", "route", "add", $ip, "via", $gw);
 }
 
 sub calc_sleeptime($) {
