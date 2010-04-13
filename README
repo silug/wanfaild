@@ -1,5 +1,8 @@
-This is a work in progress.  Unfortunately, it's only half-baked at the
-moment.  Eventually it'll work, I promise.
+This is a work in progress.  It can be used to monitor link status and
+your gateway, provided your network configuration isn't too odd.
+
+See samples/wanfaild.yml for an example of what your /etc/wanfaild.yml
+might look like.
 
 NAME
     wanfaild - Monitor WAN links and provide failover
