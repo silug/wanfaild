@@ -48,8 +48,8 @@ use Math::BigInt try => 'GMP';
 
 sub print_version();
 sub load_config($);
-sub ping(@);
-sub _connect(@);
+sub ping($@);
+sub _connect($@);
 sub linkstatus($);
 sub logger(@);
 sub writepid($);
@@ -63,6 +63,10 @@ sub ping_test($);
 sub connect_test($);
 sub gwping($);
 sub calc_sleeptime($);
+sub route_add($$);
+sub route_del($$);
+sub my_system(@);
+sub ip_cached($);
 
 =head1 SYNOPSIS
 
@@ -82,6 +86,9 @@ our %status=();
 
 # And last checked time here.
 our %checktime=();
+
+# Cache DNS lookups.
+our %ipcache=();
 
 # Store $0 and @ARGV for later (before GetOptions() changes @ARGV).
 our @args=($0, @ARGV);
@@ -166,6 +173,67 @@ exit 0;
 
 # END, subs follow...
 
+sub ip_cached($) {
+    my $host=shift;
+
+    my $n=inet_aton($host);
+
+    if (defined($n)) {
+        my $ip=inet_ntoa($n);
+
+        if (defined($ip)) {
+            $ipcache{$host}=$ip;
+            return $ip;
+        }
+
+        logger "inet_ntoa() failed!";
+        $n=undef;
+    }
+
+    if (!defined($n)) {
+        logger "Lookup failed on '$host'.";
+
+        return $ipcache{$host} if (exists($ipcache{$host}));
+
+        return undef;
+    }
+}
+
+sub my_system(@) {
+    my @command=@_;
+
+    system(@command);
+
+    my $ret=$?;
+
+    # More-or-less straight from perlfunc(1).
+    if ($ret == -1) {
+        logger "Failed to execute '@command': $!\n";
+    } elsif ($ret & 127) {
+        logger sprintf("Child '@command' died with signal %d.",  ($ret & 127));
+        logger "Core dumped." if ($ret & 128);
+    } else {
+        logger sprintf("Child '@command' exited with value %d\n", $ret >> 8);
+    }
+
+    return(($ret == 0) & 1);
+
+}
+
+sub route_del($$) {
+    my ($interface, $ip)=@_;
+
+    # FIXME - Not correct at all.
+    my_system("/sbin/ip", "route", "add", $ip, "via", $conf{'interface'}->{$interface}->{'monitor'}->{'gateway'});
+}
+
+sub route_add($$) {
+    my ($interface, $ip)=@_;
+
+    # FIXME - Not correct at all.
+    my_system("/sbin/ip", "route", "del", $ip, "via", $conf{'interface'}->{$interface}->{'monitor'}->{'gateway'});
+}
+
 sub calc_sleeptime($) {
     my $min=$_[0];
 
@@ -207,7 +275,7 @@ sub gwping($) {
 
     # Try 5 times before giving up.
     for (my $n=0;$n<5;$n++) {
-        my $ret=ping($gw);
+        my $ret=ping($interface, $gw);
 
         return $ret unless ($ret == 0);
     }
@@ -222,7 +290,8 @@ sub ping_test($) {
         (exists($conf{'interface'}->{$interface}->{'monitor'}->{'ping'})
         and @{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}});
 
-    return ping(shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}}));
+    return ping($interface,
+        shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'ping'}}));
 }
 
 sub connect_test($) {
@@ -232,7 +301,8 @@ sub connect_test($) {
         (exists($conf{'interface'}->{$interface}->{'monitor'}->{'connect'})
         and @{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}});
 
-    return _connect(shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}}));
+    return _connect($interface,
+        shuffle(@{$conf{'interface'}->{$interface}->{'monitor'}->{'connect'}}));
 }
 
 sub check_status() {
@@ -466,7 +536,9 @@ sub linkstatus($) {
     }
 }
 
-sub _connect(@) {
+sub _connect($@) {
+    my $interface=shift;
+
     my $retval=0;
 
     for my $host_and_port (@_) {
@@ -488,9 +560,17 @@ sub _connect(@) {
             next;
         }
 
-        my $iaddr=inet_aton($host);
+        my $ip=ip_cached($host);
+
+        if (!$ip) {
+            logger "Skipping failed host '$host'.";
+            $retval=-1;
+            next;
+        }
+
+        my $iaddr=inet_aton($ip);
         if (!$iaddr) {
-            logger "inet_aton($host) failed: $!";
+            logger "inet_aton($ip) failed: $!";
             $retval=-1;
             next;
         }
@@ -509,9 +589,12 @@ sub _connect(@) {
             next;
         }
 
+        route_add($interface, $ip);
+
         # FIXME - This should be converted to IO::Socket.
         # FIXME - We also should be setting a source address here, right?
         if (!socket(SOCK, PF_INET, SOCK_STREAM, $proto)) {
+            route_del($interface, $ip);
             logger "socket() failed: $!";
             $retval=-1;
             next;
@@ -520,9 +603,11 @@ sub _connect(@) {
         if (connect(SOCK, $paddr)) {
             close(SOCK);
             logger "connect $host_and_port: SUCCESS";
+            route_del($interface, $ip);
             return 1;
         } else {
             logger "connect $host_and_port: FAIL ($!)";
+            route_del($interface, $ip);
             next;
         }
     }
@@ -530,7 +615,9 @@ sub _connect(@) {
     return $retval;
 }
 
-sub ping(@) {
+sub ping($@) {
+    my $interface=shift;
+
     my $ping;
     
     eval { $ping=Net::Ping->new("icmp"); };
@@ -548,16 +635,29 @@ sub ping(@) {
     # FIXME - We should be setting the source address here.
     #$ping->bind($source) or warn "bind to $source failed: $!\n";
 
+    my $retval=-1;
+
     for my $host (@_) {
-        if ($ping->ping($host, 2)) {
+        my $ip=ip_cached($host);
+
+        if (!$ip) {
+            logger "Skipping failed host '$host'.";
+            next;
+        }
+
+        route_add($interface, $ip);
+        if ($ping->ping($ip, 2)) {
+            route_del($interface, $ip);
             logger "ping $host: SUCCESS";
             return 1;
         } else {
+            route_del($interface, $ip);
             logger "ping $host: FAIL";
+            $retval=0;
         }
     }
 
-    return 0;
+    return $retval;
 }
 
 sub load_config($) {
