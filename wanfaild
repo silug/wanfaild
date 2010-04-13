@@ -149,6 +149,7 @@ our $sleeptime=calc_sleeptime(5);
 our $done=0;
 
 # Signal says it's time to check status.
+our $testing=0;
 our $alarm=0;
 
 check_status();
@@ -465,7 +466,7 @@ sub trap_signals() {
     $SIG{'TERM'}=sub { $done++; };
 
     # SIGALRM tells us we need to check status.
-    $SIG{'ALRM'}=sub { $alarm++; };
+    $SIG{'ALRM'}=sub { $alarm++ unless $testing; };
 
     # We don't really care about exit values from children.
     # This is straight from perlfunc(1).
@@ -610,13 +611,21 @@ sub _connect($@) {
             next;
         }
 
+        $testing=1;
+        alarm(5);
         if (connect(SOCK, $paddr)) {
+            $testing=0;
+            alarm(0);
             close(SOCK);
             logger "connect $host_and_port: SUCCESS";
             route_del($interface, $ip);
             return 1;
         } else {
-            logger "connect $host_and_port: FAIL ($!)";
+            my $reason=$!;
+            $reason="Timeout" if ($reason eq "Interrupted system call");
+            $testing=0;
+            alarm(0);
+            logger "connect $host_and_port: FAIL ($reason)";
             route_del($interface, $ip);
             next;
         }
