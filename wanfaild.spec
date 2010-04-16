@@ -41,7 +41,7 @@ rm -rf $RPM_BUILD_ROOT
 
 %files
 %defattr(-,root,root,-)
-%doc COPYING README TODO
+%doc COPYING README TODO samples/
 %{_bindir}/*
 %{_mandir}/man1/*
 
@@ -51,3 +51,4 @@ rm -rf $RPM_BUILD_ROOT
 - Remove extra Test::* dependencies.
 - Fix Source0 and URL.
 - Fix files list to include bindir and man1.
+- Add samples/ to docs.
