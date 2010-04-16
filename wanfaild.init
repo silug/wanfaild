@@ -1,0 +1,85 @@
+#!/bin/sh
+#
+# wanfaild: Monitor WAN links and provide failover
+#
+# chkconfig: - 98 02
+# description: wanfaild will monitor one or more WAN links
+#              and provide failover support.
+#
+# processname: wanfaild
+# pidfile: /var/run/wanfaild.pid
+#
+### BEGIN INIT INFO
+# Provides: wanfaild
+# Required-Start: $network
+# Should-Start: $syslog $named $time
+# Required-Stop $network
+# Should-Stop: $syslog $named $time
+# Short-Description: Monitor WAN links and provide failover
+# Description: wanfaild will monitor one or more WAN links
+#              and provide failover support.
+### END INIT INFO
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+SERVICE=wanfaild
+PROCESS=wanfaild
+
+RETVAL=0
+
+start() {
+    echo -n $"Starting $SERVICE daemon: "
+    daemon $PROCESS
+    RETVAL=$?
+    echo
+    [ $RETVAL -eq 0 ] && touch /var/lock/subsys/$SERVICE
+}
+
+stop() {
+    echo -n $"Stopping $SERVICE daemon: "
+
+    killproc $PROCESS
+    RETVAL=$?
+    echo
+    if [ $RETVAL -eq 0 ]; then
+        rm -f /var/lock/subsys/$SERVICE
+        rm -f /var/run/$SERVICE.pid
+    fi
+}
+
+restart() {
+    stop
+    start
+}
+
+reload() {
+    echo -n $"Reloading $SERVICE configuration: "
+
+    killproc $PROCESS -HUP
+    RETVAL=$?
+    echo
+    return $RETVAL
+}
+
+# See how we were called.
+case "$1" in
+    start|stop|restart|reload)
+        $1
+        ;;
+    status)
+        status $PROCESS
+        RETVAL=$?
+        ;;
+    force-reload)
+        reload
+        ;;
+    condrestart|try-restart)
+        [ -f /var/lock/subsys/$SERVICE ] && restart || :
+        ;;
+    *)
+        echo $"Usage: $0 {start|stop|status|restart|condrestart|reload}"
+        exit 1
+        ;;
+esac
+exit $RETVAL
