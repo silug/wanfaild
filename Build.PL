@@ -31,7 +31,11 @@ my $builder = Module::Build->new(
         'wanfaild',
         'wanfaild-notify-admin',
     ],
+    init_files => { 'wanfaild.init' => 'init/wanfaild' },
+    install_path => { 'init' => '/etc/init.d' },
 );
+
+$builder->add_build_element('init');
 
 $builder->create_build_script();
 

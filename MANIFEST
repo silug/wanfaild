@@ -3,6 +3,8 @@ Build.PL
 MANIFEST
 wanfaild
 wanfaild-notify-admin
+wanfaild.init
+wanfaild.spec
 META.yml
 README
 TODO
