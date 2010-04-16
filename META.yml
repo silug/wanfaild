@@ -1,6 +1,6 @@
 ---
 name: wanfaild
-version: 0.02
+version: 0.03
 author:
   - 'Steven Pritchard <steve@computerroom.us>'
 abstract: Monitor WAN links and provide failover
