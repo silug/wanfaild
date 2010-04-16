@@ -20,6 +20,7 @@ my $builder = Module::Build->new(
         Net::SMTP               => 0,
         Pod::Usage              => 0,
         POSIX                   => 0,
+        Proc::Daemon            => 0,
         Socket                  => 0,
         Sys::Syslog             => 0,
         Test::More              => 0,

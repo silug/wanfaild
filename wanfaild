@@ -45,6 +45,7 @@ use List::Util qw(shuffle);
 use FileHandle;
 use POSIX qw(:sys_wait_h);
 use Math::BigInt try => 'GMP';
+use Proc::Daemon;
 
 sub print_version();
 sub load_config($);
@@ -74,6 +75,7 @@ wanfaild [options]
 
  Options:
    --conf       -c      Specify configuration file
+   --no-daemon  -D      Don't detach and become a daemon
    --help       -h      Help message
 
  Long options:
@@ -95,11 +97,13 @@ our @args=($0, @ARGV);
 
 my $configfile="/etc/wanfaild.yml";
 my $help=0;
+my $nodaemon=0;
 
 GetOptions(
-    'conf|c=s'  => \$configfile,
-    'help|h'    => \$help,
-    'version'   => \&print_version,
+    'conf|c=s'          => \$configfile,
+    'no-daemon|D'       => \$nodaemon,
+    'help|h'            => \$help,
+    'version'           => \&print_version,
 ) or pod2usage({ -exitval => 1, -verbose => 0 });
 
 pod2usage({ -exitval => 0, -verbose => 1 }) if ($help);
@@ -117,6 +121,9 @@ $conf{'mailhost'}='localhost' unless $conf{'mailhost'};
 
 die "At least one interface must be defined.\n"
     unless (exists($conf{'interface'}) and keys(%{$conf{'interface'}}));
+
+# Become a daemon.
+Proc::Daemon::Init unless $nodaemon;
 
 # Set up some environment variables for later notifications.
 prenotify();
@@ -489,7 +496,38 @@ sub cleanup() {
 sub writepid($) {
     my $file=$_[0];
 
-    # FIXME - We should clean up stale pid files.
+    if (-f $file) {
+        # Try to clean up stale pid files.
+        my $fh=new FileHandle $file, O_RDONLY;
+
+        if (!$fh) {
+            logger "Failed to read stale pid file '$file': $!";
+            return 0;
+        }
+
+        my $pid=<$fh>;
+
+        $fh->close();
+
+        $pid+=0; # Make sure it's numeric.
+
+        if ($pid) {
+            if (kill(0, $pid)) {
+                logger "Process $pid still active.";
+                return 0;
+            } else {
+                logger "Cleaning up stale pid file '$file' from PID $pid.";
+                if (!unlink($file)) {
+                    logger "unlink() failed: $!";
+                    return 0;
+                }
+            }
+        } else {
+            logger "Failed to read pid from stale pid file '$file'.";
+            return 0;
+        }
+    }
+
     my $fh=new FileHandle $file, O_WRONLY|O_CREAT|O_EXCL;
 
     if (!$fh) {
