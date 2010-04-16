@@ -16,6 +16,7 @@ SYNOPSIS
 
      Options:
        --conf       -c      Specify configuration file
+       --no-daemon  -D      Don't detach and become a daemon
        --help       -h      Help message
 
      Long options:
