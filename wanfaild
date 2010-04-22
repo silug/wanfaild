@@ -68,6 +68,8 @@ sub route_add($$);
 sub route_del($$);
 sub my_system(@);
 sub ip_cached($);
+sub gateway($);
+sub autogw($);
 
 =head1 SYNOPSIS
 
@@ -91,6 +93,9 @@ our %checktime=();
 
 # Cache DNS lookups.
 our %ipcache=();
+
+# Cache default routes.
+our %gwcache=();
 
 # Store $0 and @ARGV for later (before GetOptions() changes @ARGV).
 our @args=($0, @ARGV);
@@ -181,6 +186,56 @@ exit 0;
 
 # END, subs follow...
 
+sub autogw($) {
+    my $interface=$_[0];
+
+    my @ip=`/sbin/ip route list`;
+    if (my @default=grep /^default\s.*\bdev\s+$interface\b/, @ip) {
+        if (@default > 1) {
+            logger "Multiple default routes detected on $interface!?";
+            return -1;
+        }
+
+        if ($default[0]=/\bvia\s+\(\S+\)\b/) {
+            $gwcache{$interface}=$1;
+            return $1;
+        }
+    }
+
+    if (exists($gwcache{$interface}) and defined($gwcache{$interface})) {
+        logger "Using cached gateway $gwcache{$interface} for $interface.";
+        return $gwcache{$interface};
+    }
+
+    logger "Failed to determine default route for $interface.";
+    return -1;
+}
+
+sub gateway($) {
+    my $interface=$_[0];
+
+    if (exists($conf{'interface'}->{$interface}->{'gateway'})
+        and defined($conf{'interface'}->{$interface}->{'gateway'})) {
+        if ($conf{'interface'}->{$interface}->{'gateway'}
+            =~ /^(?:1|auto|yes|true)$/i) {
+            return autogw($interface);
+        } else {
+            return $conf{'interface'}->{$interface}->{'gateway'};
+        }
+    } elsif (exists($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
+        and defined($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
+        and $conf{'interface'}->{$interface}->{'monitor'}->{'gateway'}) {
+        if ($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'}
+            =~ /^(?:1|yes|true)$/i) {
+            return autogw($interface);
+        } else {
+            return $conf{'interface'}->{$interface}->{'monitor'}->{'gateway'};
+        }
+    } else {
+        autogw($interface);
+    }
+}
+
 sub ip_cached($) {
     my $host=shift;
 
@@ -229,7 +284,7 @@ sub my_system(@) {
 sub route_del($$) {
     my ($interface, $ip)=@_;
 
-    my $gw=$conf{'interface'}->{$interface}->{'monitor'}->{'gateway'};
+    my $gw=gateway($interface);
 
     return 1 if ($gw eq $ip);
 
@@ -242,7 +297,7 @@ sub route_del($$) {
 sub route_add($$) {
     my ($interface, $ip)=@_;
 
-    my $gw=$conf{'interface'}->{$interface}->{'monitor'}->{'gateway'};
+    my $gw=gateway($interface);
 
     return 1 if ($gw eq $ip);
 
@@ -283,13 +338,9 @@ sub gwping($) {
         and defined($conf{'interface'}->{$interface}->{'monitor'}->{'gateway'})
         and $conf{'interface'}->{$interface}->{'monitor'}->{'gateway'});
 
-    my $gw=$conf{'interface'}->{$interface}->{'monitor'}->{'gateway'};
+    my $gw=gateway($interface);
 
-    if ($gw =~ /^(?:1|yes|true)$/i) {
-        # FIXME
-        logger "Auto-configuration of gateway unimplemented.";
-        return -1;
-    }
+    return -1 unless $gw;
 
     # Try 5 times before giving up.
     for (my $n=0;$n<5;$n++) {
@@ -356,7 +407,7 @@ sub check_status() {
             $reason.=" link";
         }
 
-        # FIXME - If gateway is just true (not an IP), sub the actual gateway.
+        # Ping the gateway.
         if ($current eq "UP") {
             my $gw=gwping($interface);
             if ($gw == 0) {
