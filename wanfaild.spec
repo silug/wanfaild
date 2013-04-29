@@ -1,5 +1,5 @@
 Name:           wanfaild
-Version:        0.04
+Version:        0.05
 Release:        1%{?dist}
 Summary:        Monitor WAN links and provide failover
 License:        GPL+
@@ -69,6 +69,9 @@ fi
 %ghost %config(noreplace) %{_sysconfdir}/%{name}.yml
 
 %changelog
+* Mon Apr 29 2013 Steven Pritchard <steve@kspei.com> 0.05-1
+- Update to 0.05.
+
 * Fri Apr 16 2010 Steven Pritchard <steve@kspei.com> 0.04-1
 - Update to 0.04.
 
