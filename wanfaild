@@ -78,6 +78,7 @@ wanfaild [options]
  Options:
    --conf       -c      Specify configuration file
    --no-daemon  -D      Don't detach and become a daemon
+   --one-shot   -1      Run once, then exit
    --help       -h      Help message
 
  Long options:
@@ -103,10 +104,12 @@ our @args=($0, @ARGV);
 my $configfile="/etc/wanfaild.yml";
 my $help=0;
 my $nodaemon=0;
+my $oneshot=0;
 
 GetOptions(
     'conf|c=s'          => \$configfile,
     'no-daemon|D'       => \$nodaemon,
+    'one-shot|1'        => \$oneshot,
     'help|h'            => \$help,
     'version'           => \&print_version,
 ) or pod2usage({ -exitval => 1, -verbose => 0 });
@@ -117,7 +120,7 @@ pod2usage({ -exitval => 0, -verbose => 1 }) if ($help);
 our %conf=load_config($configfile);
 
 # Set defaults.
-$conf{'interval'}=30 unless $conf{'interval'};
+$conf{'interval'}=30 unless exists($conf{'interval'});
 $conf{'syslog'}=1 unless exists($conf{'syslog'});
 $conf{'pidfile'}="/var/run/$NAME.pid" unless $conf{'pidfile'};
 $conf{'mailfrom'}='root@localhost' unless $conf{'mailfrom'};
@@ -126,6 +129,9 @@ $conf{'mailhost'}='localhost' unless $conf{'mailhost'};
 
 die "At least one interface must be defined.\n"
     unless (exists($conf{'interface'}) and keys(%{$conf{'interface'}}));
+
+$oneshot=1 if ($conf{'interval'} == 0);
+$nodaemon=1 if ($oneshot);
 
 # Become a daemon.
 Proc::Daemon::Init unless $nodaemon;
@@ -141,7 +147,7 @@ if ($conf{'syslog'}) {
     }
 }
 
-# FIXME - Do we want to fork into the background?  Maybe add an argument?
+# Write a PID file.
 our $pidfile=$conf{'pidfile'};
 $pidfile=undef unless (writepid($pidfile));
 
@@ -165,6 +171,11 @@ our $testing=0;
 our $alarm=0;
 
 check_status();
+
+# If this is a one-shot run, we're done.
+exit 0 if ($oneshot);
+
+# Otherwise, start to loop.
 alarm($sleeptime);
 
 while ($done == 0) {
