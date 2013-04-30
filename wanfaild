@@ -173,7 +173,10 @@ our $alarm=0;
 check_status();
 
 # If this is a one-shot run, we're done.
-exit 0 if ($oneshot);
+if ($oneshot) {
+    cleanup();
+    exit 0;
+}
 
 # Otherwise, start to loop.
 alarm($sleeptime);
